@@ -1,0 +1,250 @@
+---
+title: "Final Data Analysis"
+output:
+  pdf_document: default
+  html_document: default
+date: "2022-12-09"
+---
+##1 Preliminary exploration and Data cleaning
+
+First we read in the data and look at the summaries of the variables.
+```{r}
+obsidian = read.table(file = "/Users/minseoksong/Downloads/obsidian_data.txt", header=TRUE, sep= ",")
+head(obsidian)
+```
+We first notice that there seems to be some missing value. Let us look into that.
+```{r}
+missing_ind = which(apply(is.na(obsidian),1,any) == TRUE)
+missing_ind
+```
+Data points in row 171 and 178 have missing values. For the time being, instead of doing an imputation, we omit these in order to increase the accuracy of the regression. 
+```{r}
+obsidian = obsidian[-missing_ind,]
+```
+This is because we have enough number of the data sample, which is
+```{r}
+dim(obsidian)[1]
+```
+Second thing we notice is abnormally high value of maximum of mass. We suspect that this data is corrupted.
+```{r}
+obsidian[which(obsidian$mass>30),]
+```
+Indeed, comparing with summary, we notice that the amount of four elements, Rb, Sr, Y, and Zr, does not seem to deviate too much from other data. By common sense, this indeed looks corrupted, so we delete this data point as well.
+```{r}
+obsidian = obsidian[-which(obsidian$mass>30),]
+```
+obsidian
+
+Thirdly, if we look through obsidian data, which we omit due to space concern, some "type" labels are ambiguous. 
+```{r}
+uncertaintypes = which(nchar(obsidian$type)>6)
+length(uncertaintypes)
+```
+Removing these 34 data points seems risky, because this can introduce bias. We want to merge by using the best guess, if possible. We can safely treat "Core fragment?," "Core fragment," "Cores and frags" and "Core/Fragment" as simply core.
+We can treat "Flake (listed as)" as simply Flake.
+We can treat "Distal end of prismatic blade?" and "Retouched blades" as simply Blade.
+```{r}
+for (i in 1:dim(obsidian[1])){
+  i = as.double(i)
+  if (obsidian$type[i] == "Core fragment?"  || obsidian$type[i] == "Core fragment"  || obsidian$type[i] == "Cores and frags" || obsidian$type[i] == "Cores and fragments" || obsidian$type[i] == "Core/Fragment"){
+    obsidian$type[i] = "Core"
+  }
+  else if (obsidian$type[i] == "Flake (listed as)" || obsidian$type[i] == "Used flake"){
+    obsidian$type[i] = "Flake"
+  }
+  else if (obsidian$type[i] == "Distal end of prismatic blade?" || obsidian$type[i] == "Retouched blades" || obsidian$type[i] == "Retouched Blade" || obsidian$type[i] == "Retouched Blades"){
+    obsidian$type[i] = "Blade"
+  }
+}
+```
+
+We also want to use consistent capital/small letter and singular/plural noun throughout the data in order to treat these as same when we do the regression.
+```{r}
+for (i in 1:dim(obsidian)[1]){
+  i = as.double(i)
+  if (obsidian$type[i] == "Blades" || obsidian$type[i] == "blade"){
+    obsidian$type[i] = "Blade"
+  }
+  else if (obsidian$type[i] == "Flakes" || obsidian$type[i] == "flake"){
+    obsidian$type[i] = "Flake"
+  }
+  else if (obsidian$type[i] == "core"){
+    obsidian$type[i] = "Core"
+  }
+}
+```
+
+Now, delete the rest data points with ambiguous type covariate.
+```{r}
+obsidian = obsidian[-c(which(obsidian$type == "Core fragment? Flake?"), which(obsidian$type == "Blade/Flake"), which(obsidian$type == "Flake/Core"), which(obsidian$type == "Blade (Flake?)"), which(obsidian$type == "Fragment (from core?)")),]
+```
+By looking at the site covariate, we also notice the ambiguity given by "Ali Kosh/Chaga Sefid" in a data point 215. A data point 229 also has a site Hulailan Tepe Guran which is the only one in the site covariate. Since these are just two data points, it might be the best to remove these data points without being concerned too much about introducing bias.
+```{r}
+obsidian = obsidian[-which(nchar(obsidian$site)>13),]
+```
+
+We are now ready to do the regression.
+
+##Model Selection
+
+Let us first divide the data into a training set and validation set. We use training set to do the model selection and use validation set to avoid multiple testing issues and selective inference.
+```{r}
+set.seed(1234)
+n=dim(obsidian)[1]
+ntrain = 410; nval = 203
+validation = sample(n, nval, replace=FALSE)
+train = setdiff(1:n, validation)
+```
+
+First, we decide not to include ID as a covariate in our regression. Other than the obvious reason that each data point has a different ID, we do not see any visible pattern. For example, if we restrict ID to the first three digits, they will be exactly collinear with the site covariate. If we were to expand it to more than first three digits, again model gets too large, hence increasing variance too much.
+
+```{r}
+obsidian$type = as.factor(obsidian$type)
+obsidian$site = as.factor(obsidian$site)
+lmod1 <- lm(mass ~ type + site + element_Rb + element_Sr + element_Y + element_Zr, obsidian[train,])
+summary(lmod1)
+```
+
+```{r}
+plot(lmod1$fitted.values, lmod1$residuals)
+```
+We observe nonlinearity and nonconstant variance issue at the same time, so instead of using weighted least square, we may consider transformation of data.
+Let us compare log transformation and boxcox transformation.
+```{r}
+library(MASS)
+bc <- boxcox(lmod1)
+bc
+bc$x[which.max(bc$y)]
+```
+```{r}
+par(mfrow=c(1,2))
+lmod1_boxcox = lm(mass^(-0.0606) ~ type + site + element_Rb + element_Sr + element_Y + element_Zr, obsidian[train,])
+plot(lmod1_boxcox$fitted.values, lmod1_boxcox$residuals)
+
+lmod1_log = lm(log(mass) ~ type + site + element_Rb + element_Sr + element_Y + element_Zr, obsidian[train,])
+plot(lmod1_log$fitted.values, lmod1_log$residuals)
+```
+
+Both look great in terms of our linearity/constant variance assumptions, so we may choose log transformation, which is more natural.
+
+
+```{r}
+summary(lmod1_log)
+```
+
+Remember that intercept term implicitly considers "Blade" type as a reference level, so even though t value of "Flake" type covariate is high, we do not want to delete it. This does seem like a valid model. Let us check with the validation data set.
+
+```{r}
+par(mfrow=c(2,3))
+plot(obsidian[train,]$type, lmod1_log$residuals)
+plot(obsidian[train,]$site, lmod1_log$residuals)
+plot(obsidian[train,]$element_Rb, lmod1_log$residuals)
+plot(obsidian[train,]$element_Sr, lmod1_log$residuals)
+plot(obsidian[train,]$element_Y, lmod1_log$residuals)
+plot(obsidian[train,]$element_Zr, lmod1_log$residuals)
+```
+
+There are some outliers, which we should keep an eye on, but overall linearity and constant variance assumption seem to follow for this model.
+
+```{r}
+BIC(lmod1_log)
+```
+
+So then it is natural to ask if there is an interaction term. We have ${6\choose 2}=15$ many two-way interactions to try. We use 0.05/15=0.003 threshold.
+```{r}
+BIC(lm(log(mass) ~ (type * site + element_Rb + element_Sr + element_Y + element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type * element_Rb + site + element_Sr + element_Y + element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type * element_Sr + site + element_Rb + element_Y + element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type * element_Y + site + element_Rb + element_Sr + element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type * element_Zr + site + element_Rb + element_Sr + element_Y), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type + site * element_Rb + element_Sr + element_Y + element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type + site * element_Sr + element_Rb + element_Y + element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type + site * element_Y + element_Rb + element_Sr + element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type + site * element_Zr + element_Rb + element_Sr + element_Y), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type + site + element_Rb * element_Sr + element_Y + element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type + site + element_Rb * element_Y + element_Sr + element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type + site + element_Rb * element_Zr + element_Sr + element_Y), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type + site + element_Rb + element_Sr * element_Y + element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type + site + element_Rb + element_Sr * element_Zr + element_Y), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type + site + element_Rb + element_Sr + element_Y * element_Zr), data = obsidian[train, ]))
+```
+
+We add the interaction term element_Y * element_Zr.
+```{r}
+BIC(lm(log(mass) ~ (type * site + element_Rb + element_Sr + element_Y + element_Y * element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type * element_Rb + site + element_Sr + element_Y + element_Y * element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type * element_Sr + site + element_Rb + element_Y + element_Y * element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type * element_Y + site + element_Rb + element_Sr + element_Y * element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type * element_Zr + site + element_Rb + element_Sr + element_Y * element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type + site * element_Rb + element_Sr + element_Y + element_Y * element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type + site * element_Sr + element_Rb + element_Y + element_Y * element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type + site * element_Y + element_Rb + element_Sr + element_Y * element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type + site * element_Zr + element_Rb + element_Sr + element_Y * element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type + site + element_Rb * element_Sr + element_Y + element_Y * element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type + site + element_Rb * element_Y + element_Sr + element_Y * element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type + site + element_Rb * element_Zr + element_Sr + element_Y * element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type + site + element_Rb + element_Sr * element_Y + element_Y * element_Zr), data = obsidian[train, ]))
+BIC(lm(log(mass) ~ (type + site + element_Rb + element_Sr * element_Zr + element_Y * element_Zr), data = obsidian[train, ]))
+```
+We do not further add an interaction term since 770 is less than all of the above.
+
+```{r}
+lmod2 <- lm(log(mass) ~ (type + site + element_Rb + element_Sr + element_Y * element_Zr), data = obsidian[train, ])
+summary(lmod2)
+plot(lmod2)
+```
+We do see a bit of nonconstant variance trend toward the both ends and nonlinearity trend, but they are not severe. 
+We compare this model with AIC criterion, using step function as follows.
+```{r}
+lmod3 <- lm(log(mass) ~ (type + site + element_Rb + element_Sr + element_Y * element_Zr)**2, data = obsidian[train, ])
+lmod4 <- lm(formula(step(lm(log(mass)~1, data = obsidian[train, ]), direction='forward', scope=formula(lmod3), trace=0)), data = obsidian[train, ])
+summary(lmod4)
+```
+As expected, this model is more lenient than BIC so the size is larger than lmod2.
+```{r}
+plot(lmod4)
+```
+Clearly, we have a better constant variance/linearity trend, but we have added too many interaction terms. lmod2 is a great candidate for our model. 
+
+Let us check leverage points.
+```{r}
+X = model.matrix(lmod2)
+leverage = diag(X%*%solve(t(X)%*%X,t(X)))
+plot(lmod2$fit,lmod2$resid,cex=10*leverage)
+```
+
+We do observe two huge leverage points but they are not too worrisome since they are not outliers (do not have a huge residual).
+Now, lmod2 seems to be a great cadidate model for our data. Let's compare lmod2 and lmod4 with a validation set.
+
+First we can compare in terms of predictive error:
+```{r}
+pred_lmod2 = exp(predict(lmod2, obsidian[validation,]))
+pred_lmod4 = exp(predict(lmod4, obsidian[validation,]))
+
+err_modl2 = obsidian[validation,]$mass - pred_lmod2
+err_modl4 = obsidian[validation,]$mass - pred_lmod4
+
+plot(err_modl2, err_modl4)
+abline(0, 1)
+```
+```{r}
+c(mean(err_modl2^2), mean(err_modl4^2))
+c(mean(abs(err_modl2)), mean(abs(err_modl4)))
+```
+We see that for mean square error, modl4 has a lower error, but for mean absolute error, modl2 has a lower error. 
+
+We can also verify validity of inference for our models. For each model, we will construct a 95% predictive interval for mass in the validation set. We will then check for 95% coverage—if it fails empirically, then this means that model assumption violations are causing our inference to be unreliable.
+```{r}
+pred_int_model2 = exp(predict(lmod2,obsidian[validation,],interval='prediction',level=0.9))[,2:3]
+pred_int_model4 = exp(predict(lmod4,obsidian[validation,],interval='prediction',level=0.9))[,2:3]
+cover_model2 = (pred_int_model2[,1] <= obsidian[validation,]$mass) &
+  (pred_int_model2[,2] >= obsidian[validation,]$mass)
+cover_model4 = (pred_int_model4[,1] <= obsidian[validation,]$mass) &
+  (pred_int_model4[,2] >= obsidian[validation,]$mass)
+mean(cover_model2)
+mean(cover_model4)
+```
+
+Both model seem to be achieving an appropriate coverage level. In particular, model2 seem to perform better than model4.
+
+Our final model is thus log(mass) ~ (type + site + element_Rb + element_Sr + element_Y * element_Zr) While this is not perfect, we are reasonably confident that the model assumptions hold, at least for the moment conditions.
